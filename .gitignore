@@ -23,6 +23,7 @@ logs/
 
 .env
 .env.production
+.env.nas
 
 tmp_*.py
 test_*.py

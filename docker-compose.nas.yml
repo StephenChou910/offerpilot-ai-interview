@@ -1,0 +1,166 @@
+# 面向飞牛 NAS 的单机演示配置。
+#
+# 设计边界：
+# - 仅 Nginx 映射宿主机 18080，用于局域网验收；后续 Cloudflare Tunnel 应接入 nginx 服务。
+# - PostgreSQL、Redis、MinIO 和 FastAPI 仅在 Docker 内网通信，避免暴露数据服务端口。
+# - 所有可变数据使用 /vol2 的 bind mount，避免写入空间紧张的默认 Docker 卷。
+# - NAS 当前可用内存有限，后端固定为单个 Gunicorn worker，并为服务设置内存上限。
+
+name: offerpilot
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-interview_guide}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.nas}
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    volumes:
+      - ${NAS_DATA_DIR:-/vol2/offerpilot}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    mem_limit: 512m
+    networks: [backend]
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.nas}
+    volumes:
+      - ${NAS_DATA_DIR:-/vol2/offerpilot}/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    mem_limit: 128m
+    networks: [backend]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env.nas}
+    volumes:
+      - ${NAS_DATA_DIR:-/vol2/offerpilot}/minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    mem_limit: 384m
+    networks: [backend]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+      mc mb local/$${MINIO_BUCKET} --ignore-existing;
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env.nas}
+      MINIO_BUCKET: ${MINIO_BUCKET:-interview-guide}
+    restart: "no"
+    networks: [backend]
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      [
+        "gunicorn",
+        "app.main:app",
+        "--worker-class",
+        "uvicorn.workers.UvicornWorker",
+        "--workers",
+        "1",
+        "--bind",
+        "0.0.0.0:8002",
+        "--timeout",
+        "300",
+        "--access-logfile",
+        "-",
+        "--error-logfile",
+        "-",
+      ]
+    environment:
+      AI_BAILIAN_API_KEY: ${AI_BAILIAN_API_KEY}
+      AI_MODEL: ${AI_MODEL:-qwen-plus}
+      AI_BASE_URL: ${AI_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      AI_EMBEDDING_PROVIDER: ${AI_EMBEDDING_PROVIDER:-zhipu}
+      AI_EMBEDDING_MODEL: ${AI_EMBEDDING_MODEL:-embedding-3}
+      AI_ZHIPU_API_KEY: ${AI_ZHIPU_API_KEY}
+      AI_EMBEDDING_API_KEY: ${AI_EMBEDDING_API_KEY}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      SEARCH_ENGINE: ${SEARCH_ENGINE:-tavily}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-interview_guide}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.nas}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.nas}
+      APP_STORAGE_ENDPOINT: http://minio:9000
+      APP_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      APP_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env.nas}
+      APP_STORAGE_BUCKET: ${MINIO_BUCKET:-interview-guide}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env.nas}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in .env.nas}
+      APP_INTERVIEW_FOLLOW_UP_COUNT: ${APP_INTERVIEW_FOLLOW_UP_COUNT:-0}
+    volumes:
+      - ${NAS_DATA_DIR:-/vol2/offerpilot}/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/api/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+    mem_limit: 768m
+    networks: [backend]
+
+  nginx:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.nas
+    ports:
+      - "${NAS_WEB_BIND:-0.0.0.0}:${NAS_WEB_PORT:-18080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    mem_limit: 128m
+    networks: [backend]
+
+networks:
+  backend:
+    driver: bridge
