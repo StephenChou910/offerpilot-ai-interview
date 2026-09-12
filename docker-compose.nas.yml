@@ -43,7 +43,9 @@ services:
     networks: [backend]
 
   minio:
-    image: minio/minio:latest
+    # Docker Hub no longer reliably serves the archived minio/* images.
+    # Pin the last upstream community release from Quay for reproducible NAS builds.
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -60,7 +62,7 @@ services:
     networks: [backend]
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
       minio:
         condition: service_healthy

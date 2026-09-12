@@ -25,6 +25,8 @@ mkdir -p /vol2/offerpilot
 
 ## 2. 构建并启动
 
+部署配置已将 MinIO 与 `mc` 固定到 Quay 中的明确版本，不依赖 Docker Hub 上可能失效的 `minio/*:latest` 标签。
+
 ```bash
 docker compose --env-file .env.nas -f docker-compose.nas.yml build
 docker compose --env-file .env.nas -f docker-compose.nas.yml up -d
