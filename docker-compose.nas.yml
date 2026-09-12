@@ -31,6 +31,9 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.nas}
+    environment:
+      # Used by the in-container health check; it is not exposed outside the Docker network.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.nas}
     volumes:
       - ${NAS_DATA_DIR:-/vol2/offerpilot}/redis:/data
     healthcheck:
