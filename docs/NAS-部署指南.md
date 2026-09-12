@@ -16,11 +16,12 @@ git clone git@github.com:StephenChou910/offerpilot-ai-interview.git /vol2/offerp
 cd /vol2/offerpilot/app
 cp .env.nas.example .env.nas
 chmod 600 .env.nas
-mkdir -p /vol2/offerpilot/{postgres,redis,minio,logs}
-chmod 700 /vol2/offerpilot/{postgres,redis,minio,logs}
+mkdir -p /vol2/offerpilot
 ```
 
 编辑 `.env.nas`：替换所有密码占位符，填入实际模型 API Key。首次局域网验收保留 `CORS_ALLOWED_ORIGINS=http://<NAS_LAN_IP>:18080`。
+
+不要手工创建 `postgres`、`redis`、`minio` 子目录或修改其权限；Docker 在首次启动时会创建这些挂载目录。后端日志统一通过 `docker compose logs` 查看，避免 NAS 宿主机目录权限与镜像内非 root 用户冲突。
 
 ## 2. 构建并启动
 

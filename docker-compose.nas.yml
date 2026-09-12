@@ -124,8 +124,6 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in .env.nas}
       APP_INTERVIEW_FOLLOW_UP_COUNT: ${APP_INTERVIEW_FOLLOW_UP_COUNT:-0}
-    volumes:
-      - ${NAS_DATA_DIR:-/vol2/offerpilot}/logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
