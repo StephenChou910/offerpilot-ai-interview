@@ -26,8 +26,10 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 COPY skills ./skills
 
-# 创建日志目录并设置权限
-RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+# 创建日志目录并设置权限。
+# Some NAS filesystems can preserve restrictive source-file modes in Docker's
+# build context; make application files readable after ownership is assigned.
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app && chmod -R a+rX /app
 
 # 切换到非 root 用户
 USER appuser
