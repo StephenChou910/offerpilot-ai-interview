@@ -1,0 +1,45 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.venv/
+env/
+venv/
+
+node_modules/
+frontend/node_modules/
+
+dist/
+build/
+
+.idea/
+.vscode/
+.claude/
+.pytest_cache/
+
+*.log
+logs/
+
+.env
+.env.production
+
+tmp_*.py
+test_*.py
+!tests/test_*.py
+
+ENDPOINT_CALLED.txt
+ENTRY_MARKER.txt
+TEST_BG.txt
+
+# Server-specific config (not in repo)
+.env.prod
+docker-compose.infra.yml
+DEPLOY_SERVER.md
+
+# Stray files
+-w
+.gstack/
+
+# Generated evaluation data may contain real resume content; keep it local.
+tests/rag_eval_dataset.json

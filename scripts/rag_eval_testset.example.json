@@ -1,0 +1,14 @@
+[
+  {
+    "question": "这里写一个能从知识库中找到答案的问题（例如：缓存穿透的解决方案有哪些？）",
+    "golden_chunk_ids": [1, 2]
+  },
+  {
+    "question": "第二个问题（覆盖另一个 topic，避免只测一种）",
+    "golden_chunk_ids": [3]
+  },
+  {
+    "question": "第三个问题（可以是一个图谱能帮上忙的关联性问题）",
+    "golden_chunk_ids": [4, 5]
+  }
+]
