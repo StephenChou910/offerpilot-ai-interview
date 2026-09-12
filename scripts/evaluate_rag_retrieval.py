@@ -31,7 +31,9 @@ RAG 检索质量评估脚本
 import argparse
 import asyncio
 import json
+import math
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -86,11 +88,13 @@ async def export_chunks(kb_id: int) -> list[str]:
     return lines
 
 
-def compute_metrics(cases: list[dict], retrieved_by_case: list[list[int]]) -> dict:
-    """计算 Hit@k / MRR / Recall@k。golden 为空的题不参与统计。"""
+def compute_metrics(cases: list[dict], retrieved_by_case: list[list[int]], top_k: int) -> dict:
+    """计算二元相关性下的 Hit@K、Precision@K、Recall@K、MRR 与 nDCG@K。"""
     hits = 0
     rr_sum = 0.0
     recall_sum = 0.0
+    precision_sum = 0.0
+    ndcg_sum = 0.0
     valid = 0
     for case, ids in zip(cases, retrieved_by_case):
         golden = set(case.get("golden_chunk_ids") or [])
@@ -100,18 +104,25 @@ def compute_metrics(cases: list[dict], retrieved_by_case: list[list[int]]) -> di
         overlap = golden & set(ids)
         if overlap:
             hits += 1
+        precision_sum += len(overlap) / top_k
         for rank, cid in enumerate(ids, start=1):
             if cid in golden:
                 rr_sum += 1.0 / rank
                 break
+        dcg = sum(1.0 / math.log2(rank + 1) for rank, cid in enumerate(ids, start=1) if cid in golden)
+        ideal_count = min(len(golden), top_k)
+        ideal_dcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_count + 1))
+        ndcg_sum += dcg / ideal_dcg if ideal_dcg else 0.0
         recall_sum += len(overlap) / len(golden)
     if valid == 0:
-        return {"valid": 0, "hit_at_k": 0.0, "mrr": 0.0, "recall_at_k": 0.0}
+        return {"valid": 0, "hit_at_k": 0.0, "precision_at_k": 0.0, "mrr": 0.0, "recall_at_k": 0.0, "ndcg_at_k": 0.0}
     return {
         "valid": valid,
         "hit_at_k": hits / valid,
+        "precision_at_k": precision_sum / valid,
         "mrr": rr_sum / valid,
         "recall_at_k": recall_sum / valid,
+        "ndcg_at_k": ndcg_sum / valid,
     }
 
 
@@ -128,7 +139,7 @@ async def _retrieve(engine: MultiChannelRetrievalEngine, kb_id: int, question: s
     return [ref.chunk_id for ref in references]
 
 
-async def evaluate(kb_id: int, testset: list[dict], top_k: int, verbose: bool) -> None:
+async def evaluate(kb_id: int, testset: list[dict], top_k: int, verbose: bool) -> dict:
     vector_retrieved: list[list[int]] = []
     hybrid_retrieved: list[list[int]] = []
 
@@ -152,8 +163,8 @@ async def evaluate(kb_id: int, testset: list[dict], top_k: int, verbose: bool) -
                 print(f"  纯向量 top-{top_k}: {vector_ids}")
                 print(f"  混合   top-{top_k}: {hybrid_ids}")
 
-    vector_metrics = compute_metrics(testset, vector_retrieved)
-    hybrid_metrics = compute_metrics(testset, hybrid_retrieved)
+    vector_metrics = compute_metrics(testset, vector_retrieved, top_k)
+    hybrid_metrics = compute_metrics(testset, hybrid_retrieved, top_k)
     n = vector_metrics["valid"]
     graph_contrib = sum(1 for v, h in zip(vector_retrieved, hybrid_retrieved) if v != h)
 
@@ -171,7 +182,13 @@ async def evaluate(kb_id: int, testset: list[dict], top_k: int, verbose: bool) -
     print("\n" + "-" * 60)
     print(f"{'指标':<14}{'纯向量':<14}{'混合(向量+图)':<18}{'提升'}")
     print("-" * 60)
-    for label, key in [("Hit@k", "hit_at_k"), ("MRR", "mrr"), ("Recall@k", "recall_at_k")]:
+    for label, key in [
+        ("Hit@k", "hit_at_k"),
+        ("Precision@k", "precision_at_k"),
+        ("MRR", "mrr"),
+        ("Recall@k", "recall_at_k"),
+        ("nDCG@k", "ndcg_at_k"),
+    ]:
         v = vector_metrics[key]
         h = hybrid_metrics[key]
         diff = h - v
@@ -190,6 +207,28 @@ async def evaluate(kb_id: int, testset: list[dict], top_k: int, verbose: bool) -
         f"  「在自建 {n} 题测试集上，GraphRAG 混合检索较纯向量检索 "
         f"Hit@{top_k} 提升 {(hybrid_metrics['hit_at_k'] - vector_metrics['hit_at_k']) * 100:.1f} 个百分点。」"
     )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "kb_id": kb_id,
+        "top_k": top_k,
+        "test_cases": len(testset),
+        "valid_cases": n,
+        "embedding_provider": provider,
+        "using_real_embedding": using_real,
+        "graph_changed_cases": graph_contrib,
+        "vector": vector_metrics,
+        "hybrid": hybrid_metrics,
+        "delta": {key: hybrid_metrics[key] - vector_metrics[key] for key in vector_metrics if key != "valid"},
+        "cases": [
+            {
+                "question": case["question"],
+                "golden_chunk_ids": case.get("golden_chunk_ids") or [],
+                "vector_chunk_ids": vector_ids,
+                "hybrid_chunk_ids": hybrid_ids,
+            }
+            for case, vector_ids, hybrid_ids in zip(testset, vector_retrieved, hybrid_retrieved)
+        ],
+    }
 
 
 async def main() -> None:
@@ -201,6 +240,7 @@ async def main() -> None:
     parser.add_argument("--testset", type=str, help="测试集 JSON 文件路径")
     parser.add_argument("--top-k", type=int, default=5, help="检索返回的 Top-K（默认 5）")
     parser.add_argument("--verbose", action="store_true", help="打印每题检索明细")
+    parser.add_argument("--output", type=str, help="将结构化评测结果写入 JSON 文件")
     args = parser.parse_args()
 
     init_engine()
@@ -229,7 +269,11 @@ async def main() -> None:
             print("测试集格式错误：应为非空 JSON 数组。", file=sys.stderr)
             sys.exit(1)
 
-        await evaluate(args.kb_id, testset, args.top_k, args.verbose)
+        result = await evaluate(args.kb_id, testset, args.top_k, args.verbose)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            print(f"\n结构化结果已写入: {args.output}")
     finally:
         await close_db()
 

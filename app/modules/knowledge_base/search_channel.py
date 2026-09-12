@@ -13,6 +13,8 @@ from app.modules.knowledge_base.schemas import RagReferenceDTO
 
 logger = logging.getLogger(__name__)
 
+RRF_K = 60
+
 
 @dataclass
 class SearchContext:
@@ -47,6 +49,10 @@ class SearchChannel(ABC):
     def get_priority(self) -> int:
         """获取优先级（数字越小优先级越高）"""
         pass
+
+    def get_fusion_weight(self) -> float:
+        """RRF 融合权重。默认通道等权，子类可降低辅助通道的影响。"""
+        return 1.0
 
     @abstractmethod
     def is_enabled(self, context: SearchContext) -> bool:
@@ -200,30 +206,49 @@ class MultiChannelRetrievalEngine:
 
         results = await asyncio.gather(*[c.search(context) for c in enabled_channels], return_exceptions=True)
 
-        # 3. 合并结果
-        all_chunks = []
+        # 3. 基于排名融合结果。
+        # 不直接混排各通道原始分数：向量余弦相似度与图谱实体命中分数不在同一量纲，
+        # 直接比较会让图谱的启发式分数挤掉语义更相关的向量候选。
+        fused_chunks: dict[int, RagReferenceDTO] = {}
+        fused_scores: dict[int, float] = {}
+        # 纯向量已经提供完整 Top-K 时，图谱只作为候选集内的重排信号。
+        # 这样可避免高频实体将向量第 K+1 名的弱相关片段提升进最终结果，
+        # 从而牺牲基础召回率。向量候选不足时仍允许辅助通道补齐结果。
+        primary_result = next(
+            (
+                result
+                for i, result in enumerate(results)
+                if not isinstance(result, Exception) and enabled_channels[i].get_priority() == 1
+            ),
+            None,
+        )
+        protected_primary_ids = (
+            {chunk.chunk_id for chunk in primary_result.chunks[: context.top_k]}
+            if primary_result is not None and len(primary_result.chunks) >= context.top_k
+            else set()
+        )
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 logger.error("通道 %s 检索失败: %s", enabled_channels[i].get_name(), result)
                 continue
-            all_chunks.extend(result.chunks)
+            channel = enabled_channels[i]
+            weight = channel.get_fusion_weight()
+            for rank, chunk in enumerate(result.chunks, start=1):
+                if channel.get_priority() != 1 and protected_primary_ids and chunk.chunk_id not in protected_primary_ids:
+                    continue
+                contribution = weight / (RRF_K + rank)
+                fused_scores[chunk.chunk_id] = fused_scores.get(chunk.chunk_id, 0.0) + contribution
+                if chunk.chunk_id not in fused_chunks:
+                    fused_chunks[chunk.chunk_id] = chunk
 
-        if not all_chunks:
+        if not fused_chunks:
             logger.warning("所有检索通道均未返回结果")
             return []
 
-        # 4. 去重（基于 chunk_id）
-        chunks = self._deduplicate(all_chunks)
-        logger.info("去重后: %d → %d", len(all_chunks), len(chunks))
-
-        # 5. 按分数排序并返回 Top-K
+        # 4. 为最终引用写入融合分数并排序。相同 chunk 被多路召回时会累积贡献。
+        chunks = list(fused_chunks.values())
+        for chunk in chunks:
+            chunk.score = fused_scores[chunk.chunk_id]
+            chunk.metadata = {**chunk.metadata, "fusion": "weighted_rrf"}
         chunks.sort(key=lambda c: c.score, reverse=True)
         return chunks[: context.top_k]
-
-    def _deduplicate(self, chunks: List[RagReferenceDTO]) -> List[RagReferenceDTO]:
-        """去重：保留分数最高的"""
-        seen = {}
-        for chunk in chunks:
-            if chunk.chunk_id not in seen or chunk.score > seen[chunk.chunk_id].score:
-                seen[chunk.chunk_id] = chunk
-        return list(seen.values())

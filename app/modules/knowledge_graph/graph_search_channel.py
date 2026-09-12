@@ -33,6 +33,10 @@ class GraphSearchChannel(SearchChannel):
     def get_priority(self) -> int:
         return 2
 
+    def get_fusion_weight(self) -> float:
+        # 图谱实体命中是辅助信号，只有通过直接实体与语义双重过滤后才参与融合。
+        return 0.25
+
     def is_enabled(self, context: SearchContext) -> bool:
         return True
 
@@ -75,7 +79,8 @@ class GraphSearchChannel(SearchChannel):
             )
 
             chunks.sort(key=lambda c: c.score, reverse=True)
-            chunks = chunks[: context.top_k]
+            # 保留更多图谱候选交给多路融合，而不是在单个通道中过早截断。
+            chunks = chunks[: context.top_k * 2]
 
             latency_ms = int((time.time() - start) * 1000)
             confidence = max([c.score for c in chunks]) if chunks else 0.0
@@ -160,8 +165,8 @@ class GraphSearchChannel(SearchChannel):
         result = await self.db_session.execute(stmt)
         chunks = list(result.scalars().all())
 
-        # 语义过滤：仅跨KB模式启用（kb_id=None），过滤不同KB中的噪声chunk
-        if query_embedding is not None and chunks and kb_id is None:
+        # 图谱扩展仅说明实体相关，不等于问题语义相关；所有模式都需要语义过滤。
+        if query_embedding is not None and chunks:
             semantic_threshold = 0.4
             filtered_chunks = []
             for chunk in chunks:
@@ -189,6 +194,10 @@ class GraphSearchChannel(SearchChannel):
             content = chunk.content or ""
             # 命中的实体名数量（区分直接实体和间接实体）
             direct_hits = sum(1 for e in entity_set if e in content)
+            # 两跳扩展产生的关联实体可能是高频枢纽。若候选不包含问题直接实体，
+            # 它无法证明与当前问题相关，不应获得图通道召回资格。
+            if direct_hits == 0:
+                continue
             graph_hits = sum(1 for e in graph_entity_names if e in content)
 
             score = min(0.95, 0.5 + direct_hits * 0.15 + graph_hits * 0.05)
