@@ -131,8 +131,13 @@ class StreamWorker:
         if not pending:
             return
 
-        # 筛选出空闲超时的消息
-        idle_ids = [item["message_id"] for item in pending]
+        # 只认领其他 consumer 遗留的消息。当前 consumer 正在处理耗时
+        # LLM 任务时，不能把自己的 pending 消息再次认领并并发执行。
+        idle_ids = [
+            item["message_id"]
+            for item in pending
+            if item.get("consumer") != self._consumer_name
+        ]
         if not idle_ids:
             return
 

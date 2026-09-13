@@ -64,6 +64,9 @@ class StreamTaskHandler(ABC):
         async with self._session_factory() as db:
             try:
                 await self.update_status(db, raw, AsyncTaskStatus.PROCESSING)
+                # Do not keep a database transaction (or row lock) open while
+                # an external LLM request is running for minutes.
+                await db.commit()
                 await asyncio.wait_for(self.process(db, raw), timeout=TASK_TIMEOUT_SECONDS)
                 await self.update_status(db, raw, AsyncTaskStatus.COMPLETED)
                 await db.commit()

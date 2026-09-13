@@ -1,6 +1,8 @@
 import logging
+import re
 from typing import TypeVar
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
@@ -19,6 +21,57 @@ STRICT_JSON_INSTRUCTION = """
 2) 不要输出任何解释文字、前后缀、注释。
 3) 所有字符串内引号必须正确转义。
 """
+
+
+def _content_to_text(content: object) -> str:
+    """Normalize provider-specific message content without logging user data."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+        return "\n".join(text_parts)
+    return str(content or "")
+
+
+def _extract_json_object(content: str) -> str:
+    """Extract the first complete JSON object from a model response.
+
+    Some OpenAI-compatible providers prepend a reasoning block or a short
+    explanation even when the prompt requires JSON only.  Keeping this small
+    normalization step before Pydantic validation makes those responses usable
+    while the schema remains the final source of truth.
+    """
+    text = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    start = text.find("{")
+    if start < 0:
+        return text
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return text
 
 
 class StructuredOutputInvoker:
@@ -51,27 +104,31 @@ class StructuredOutputInvoker:
                     ("human", user_prompt),
                 ]
                 response = await chat_model.ainvoke(messages)
-                content = response.content if response.content else ""
+                content = _extract_json_object(_content_to_text(response.content))
                 return parser.parse(content)
-            except Exception as e:
+            except OutputParserException as e:
                 last_error = e
                 if attempt < self.max_attempts:
                     logger.warning(
-                        "%s结构化解析失败，准备重试: attempt=%d/%d, error=%s",
+                        "%s结构化解析失败，准备重试: attempt=%d/%d, error_type=%s",
                         log_context,
                         attempt,
                         self.max_attempts,
-                        str(e),
+                        type(e).__name__,
                     )
                 else:
                     logger.error(
-                        "%s结构化解析失败，已达最大重试次数: attempts=%d, error=%s",
+                        "%s结构化解析失败，已达最大重试次数: attempts=%d, error_type=%s",
                         log_context,
                         self.max_attempts,
-                        str(e),
+                        type(e).__name__,
                     )
 
-        raise BusinessException(error_code, f"{error_prefix}{last_error}")
+            except Exception as e:
+                logger.error("%s调用 AI 服务失败: error_type=%s", log_context, type(e).__name__)
+                raise BusinessException(error_code, f"{error_prefix}AI 服务调用失败，请稍后重试") from e
+
+        raise BusinessException(error_code, f"{error_prefix}模型响应未满足结构化格式，请重试")
 
     def _build_retry_prompt(self, original_system: str, last_error: Exception | None) -> str:
         if not self.use_repair_prompt:
@@ -80,8 +137,9 @@ class StructuredOutputInvoker:
         parts = [original_system, "\n\n", STRICT_JSON_INSTRUCTION, "\n上次输出解析失败，请仅返回合法 JSON。"]
 
         if self.include_last_error and last_error:
-            msg = str(last_error).replace("\n", " ").strip()[:200]
-            parts.append(f"\n上次失败原因：{msg}")
+            # OutputParserException may include the model response, which can
+            # contain a user's resume. Never send or log that content again.
+            parts.append("\n上次输出未通过 JSON 格式或字段校验。")
 
         return "".join(parts)
 
