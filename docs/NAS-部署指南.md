@@ -63,3 +63,24 @@ docker compose --env-file .env.nas -f docker-compose.nas.yml down
 ## 5. 后续公开访问
 
 局域网验收稳定后，再通过 Cloudflare Tunnel 将 `nginx:80` 映射到域名。不要把 NAS 管理后台、数据库、Redis、MinIO 或 FastAPI 端口直接公开到互联网。
+
+### Cloudflare Tunnel（推荐）
+
+域名在 Cloudflare 显示为 Active 后，创建一个命名 Tunnel，并在其 Published application 中将公开主机名（例如 `offerpilot-ai.site`）映射到 `http://nginx:80`。这是容器网络中的服务地址，不是 NAS 的局域网 IP。
+
+将 Tunnel 页面提供的 token 只写入 NAS 本机 `.env.nas`：
+
+```env
+CLOUDFLARE_TUNNEL_TOKEN=<只在 Cloudflare 页面可见的 token>
+CORS_ALLOWED_ORIGINS=https://offerpilot-ai.site,http://192.168.5.8:18080
+```
+
+不要将 token 截图、发送或提交 Git。然后在 NAS 启用可选 Tunnel 容器：
+
+```bash
+docker compose --profile tunnel --env-file .env.nas -f docker-compose.nas.yml up -d
+docker compose --profile tunnel --env-file .env.nas -f docker-compose.nas.yml ps
+docker compose --profile tunnel --env-file .env.nas -f docker-compose.nas.yml logs --tail=100 cloudflared
+```
+
+Tunnel 不映射 NAS 端口；它仅向 Cloudflare 发起出站连接。外部访问验收通过后，可用 `https://offerpilot-ai.site` 访问。`CLOUDFLARE_TUNNEL_TOKEN` 更新后需重建 cloudflared 容器。

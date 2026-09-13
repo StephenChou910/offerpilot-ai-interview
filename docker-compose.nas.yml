@@ -164,6 +164,19 @@ services:
     mem_limit: 128m
     networks: [backend]
 
+  cloudflared:
+    # Enabled explicitly with: docker compose --profile tunnel ... up -d
+    # It creates outbound-only connections to Cloudflare and publishes no NAS port.
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      nginx:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 128m
+    profiles: ["tunnel"]
+    networks: [backend]
+
 networks:
   backend:
     driver: bridge
