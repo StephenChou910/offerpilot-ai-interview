@@ -13,5 +13,7 @@ FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /frontend/dist /usr/share/nginx/html
+# NAS build contexts may retain restrictive file modes; nginx workers need read access.
+RUN chmod -R a+rX /usr/share/nginx/html
 
 EXPOSE 80
