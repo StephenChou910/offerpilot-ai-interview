@@ -56,6 +56,14 @@ class InterviewSessionService:
         if request.resume_id and (is_project_drill or not resume_text):
             resume_detail = await resume_history_service.get_resume_detail(db, request.resume_id, user_id)
             resume_text = resume_text or resume_detail.resume_text
+            structured = await resume_persistence_service.get_structured_profile(db, request.resume_id, user_id)
+            if structured:
+                structured_text = self._structured_resume_context(structured)
+                if structured_text.strip():
+                    # 结构化数据优先，原始 OCR/文本作为兜底来源。
+                    resume_text = structured_text
+                    if resume_detail is not None:
+                        resume_detail.resume_text = structured_text
 
         logger.info(
             "创建新面试会话: %s, skill: %s, mode: %s, difficulty: %s, questionCount: %d",
@@ -121,6 +129,22 @@ class InterviewSessionService:
             evaluate_status=None,
             evaluate_error=None,
         )
+
+    @staticmethod
+    def _structured_resume_context(structured: dict) -> str:
+        parts = [structured.get("summary") or ""]
+        for item in structured.get("work_experiences", []):
+            parts.append("工作经历：{} {} {}-{}\n{}".format(
+                item.get("company", ""), item.get("title", ""),
+                item.get("start_date", ""), item.get("end_date", ""), item.get("description", "")))
+        for item in structured.get("projects", []):
+            highlights = "；".join(item.get("highlights") or [])
+            parts.append("项目：{}\n角色：{}\n描述：{}\n亮点：{}".format(
+                item.get("name", ""), item.get("role", ""), item.get("description", ""), highlights))
+        if structured.get("skills"):
+            parts.append("技能：" + "、".join(
+                f"{item.get('name', '')}({item.get('proficiency', '')})" for item in structured["skills"]))
+        return "\n\n".join(part for part in parts if part.strip())
 
     async def get_session(self, db: AsyncSession, session_id: str, user_id: int = 0) -> InterviewSessionDTO:
         entity = await interview_persistence_service.find_by_session_id_or_throw(db, session_id, user_id)

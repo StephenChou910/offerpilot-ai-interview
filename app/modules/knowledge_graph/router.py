@@ -1,12 +1,14 @@
 import logging
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.result import Result
 from app.database import get_db
 from app.modules.auth.dependencies import get_current_user_id
 from app.modules.knowledge_base.persistence_service import knowledge_base_persistence_service
+from app.modules.knowledge_base.models import KnowledgeBaseEntity
 from app.modules.knowledge_graph.extraction_service import knowledge_graph_extraction_service
 from app.modules.knowledge_graph.persistence_service import knowledge_graph_persistence_service
 from app.modules.knowledge_graph.schemas import (
@@ -33,7 +35,7 @@ async def list_entities(
     db: AsyncSession = Depends(get_db),
 ):
     entities, total = await knowledge_graph_persistence_service.list_entities(
-        db, entity_type=entity_type, keyword=keyword, page=page, size=size
+        db, entity_type=entity_type, keyword=keyword, page=page, size=size, user_id=user_id
     )
     items = [knowledge_graph_persistence_service.to_entity_dto(e) for e in entities]
     return Result.success({"items": [i.model_dump() for i in items], "total": total, "page": page, "size": size})
@@ -47,9 +49,11 @@ async def get_graph(
     user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
+    if kb_id is not None:
+        await knowledge_base_persistence_service.find_by_id_or_throw(db, kb_id, user_id)
     types_list = [t.strip() for t in entity_types.split(",") if t.strip()] if entity_types else None
     graph_data = await knowledge_graph_persistence_service.get_graph_data(
-        db, kb_id=kb_id, entity_types=types_list, limit=limit
+        db, kb_id=kb_id, entity_types=types_list, limit=limit, user_id=user_id
     )
     return Result.success(graph_data)
 
@@ -61,7 +65,7 @@ async def get_entity_detail(
     user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    detail = await knowledge_graph_persistence_service.get_entity_detail(db, name, depth=depth)
+    detail = await knowledge_graph_persistence_service.get_entity_detail(db, name, depth=depth, user_id=user_id)
     if not detail:
         return Result.error(f"实体 '{name}' 不存在", 404)
     return Result.success(detail)
@@ -77,8 +81,10 @@ async def list_triples(
     user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
+    if kb_id is not None:
+        await knowledge_base_persistence_service.find_by_id_or_throw(db, kb_id, user_id)
     if entity:
-        triples = await knowledge_graph_persistence_service.query_triples_by_entity(db, entity, kb_id)
+        triples = await knowledge_graph_persistence_service.query_triples_by_entity(db, entity, kb_id, user_id)
     else:
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
@@ -93,6 +99,12 @@ async def list_triples(
             stmt = stmt.where(KnowledgeTriple.predicate == predicate)
         if kb_id:
             stmt = stmt.where(KnowledgeTriple.source_kb_id == kb_id)
+        else:
+            stmt = stmt.where(
+                KnowledgeTriple.source_kb_id.in_(
+                    select(KnowledgeBaseEntity.id).where(KnowledgeBaseEntity.user_id == user_id)
+                )
+            )
         stmt = stmt.offset((page - 1) * size).limit(size)
         result = await db.execute(stmt)
         triples = list(result.scalars().all())
@@ -132,6 +144,8 @@ async def create_triple(
     user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
+    if request.source_kb_id is not None:
+        await knowledge_base_persistence_service.find_by_id_or_throw(db, request.source_kb_id, user_id)
     subj = await knowledge_graph_persistence_service.find_or_create_entity(db, request.subject, request.subject_type)
     obj = await knowledge_graph_persistence_service.find_or_create_entity(db, request.object, request.object_type)
     triple = await knowledge_graph_persistence_service.create_triple(
@@ -159,6 +173,13 @@ async def delete_triple(
     user_id: int = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
+    owned = await db.execute(
+        select(KnowledgeTriple.id)
+        .join(KnowledgeBaseEntity, KnowledgeTriple.source_kb_id == KnowledgeBaseEntity.id)
+        .where(KnowledgeTriple.id == triple_id, KnowledgeBaseEntity.user_id == user_id)
+    )
+    if owned.scalar_one_or_none() is None:
+        return Result.error("三元组不存在", 404)
     deleted = await knowledge_graph_persistence_service.delete_triple(db, triple_id)
     if not deleted:
         return Result.error("三元组不存在", 404)

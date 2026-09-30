@@ -19,7 +19,10 @@ class KnowledgeBaseIndexStreamProducer(StreamTaskProducer):
         super().__init__(redis_service, KNOWLEDGE_BASE_INDEX_STREAM_KEY)
 
     async def send_index_task(self, knowledge_base_id: int) -> None:
-        await self.send_task({FIELD_KNOWLEDGE_BASE_ID: str(knowledge_base_id)})
+        await self.send_task(
+            {FIELD_KNOWLEDGE_BASE_ID: str(knowledge_base_id)},
+            idempotency_key=f"knowledge-index:{knowledge_base_id}",
+        )
 
 
 class KnowledgeBaseIndexTaskHandler(StreamTaskHandler):

@@ -21,9 +21,10 @@
 从简历中提取结构化候选人画像，用于面试出题时的个性化定制：
 1. **projects**：提取简历中的项目经历列表。每个项目包含：name（项目名称）、role（担任角色）、techStack（使用的技术栈列表）、description（一句话描述）、highlights（亮点/成果列表）。如果简历中没有明确的项目经历，返回空数组。
 2. **techStacks**：提取所有提到的技术栈。每个技术栈包含：name（技术名称）、proficiency（熟练程度：熟练/熟悉/了解/使用过，根据简历上下文推断）、context（在哪个项目或场景中使用的）。
-3. **experienceLevel**：根据教育背景、工作年限、项目复杂度判断经验等级。取值：intern（实习）、junior（初级/校招/0-2年）、mid（中级/2-5年）、senior（高级/5年以上）。
-4. **hasProjects**：布尔值，简历中是否有具体的项目经历（课程设计、个人项目、实习项目、工作项目都算）。如果只有技术栈罗列但没有项目描述，算 false。
-5. **summary**：一句话概括候选人的技术画像，如"3年Java后端，擅长微服务和高并发，有电商项目经验"。
+3. **workExperiences**：提取工作/实习经历。每项包含 company、title、startDate、endDate、description；没有明确经历时返回空数组。
+4. **experienceLevel**：根据教育背景、工作年限、项目复杂度判断经验等级。取值：intern（实习）、junior（初级/校招/0-2年）、mid（中级/2-5年）、senior（高级/5年以上）。
+5. **hasProjects**：布尔值，简历中是否有具体的项目经历（课程设计、个人项目、实习项目、工作项目都算）。如果只有技术栈罗列但没有项目描述，算 false。
+6. **summary**：一句话概括候选人的技术画像，如"3年Java后端，擅长微服务和高并发，有电商项目经验"。
 
 # Audit Workflow
 1. **名词纠错**：扫描全文，列出所有不规范的技术名词。
@@ -58,6 +59,7 @@ JSON 结构必须严格包含以下字段：
 6. profile: 对象，包含以下字段：
    - projects: 对象数组，每个对象包含 name, role, techStack(字符串数组), description, highlights(字符串数组)
    - techStacks: 对象数组，每个对象包含 name, proficiency, context
+   - workExperiences: 对象数组，每个对象包含 company, title, startDate, endDate, description
    - experienceLevel: 字符串，取值为 intern/junior/mid/senior
    - hasProjects: 布尔值
    - summary: 字符串，候选人技术画像概括

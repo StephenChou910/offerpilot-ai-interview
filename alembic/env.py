@@ -16,6 +16,8 @@ def import_models() -> None:
         AgentExecutionStepEntity,
         AgentPerformanceEntity,
     )
+    from app.common.task_models import AsyncTaskExecutionEntity  # noqa: F401
+    from app.common.llm_audit_models import LLMCallAuditEntity  # noqa: F401
     from app.modules.auth.models import UserEntity  # noqa: F401
     from app.modules.interview.models import (  # noqa: F401
         InterviewAnswerEntity,
@@ -27,7 +29,7 @@ def import_models() -> None:
     from app.modules.knowledge_base.models import KnowledgeBaseEntity, KnowledgeChunkEntity, RagChatEntity  # noqa: F401
     from app.modules.knowledge_graph.models import KnowledgeGraphEntity, KnowledgeTriple  # noqa: F401
     from app.modules.organization.models import OrganizationEntity, OrganizationMemberEntity  # noqa: F401
-    from app.modules.resume.models import ResumeAnalysisEntity, ResumeEntity  # noqa: F401
+    from app.modules.resume.models import (ResumeAnalysisEntity, ResumeEntity, ResumeVersionEntity, ResumeProfileEntity, ResumeWorkExperienceEntity, ResumeProjectEntity, ResumeSkillEntity)  # noqa: F401
     from app.modules.training.models import TrainingTaskProgressEntity  # noqa: F401
 
 

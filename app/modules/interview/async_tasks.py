@@ -18,7 +18,11 @@ class EvaluateStreamProducer(StreamTaskProducer):
         super().__init__(redis_service, EVALUATE_STREAM_KEY)
 
     async def send_evaluate_task(self, session_id: str) -> None:
-        await self.send_task({FIELD_SESSION_ID: session_id}, maxlen=10000)
+        await self.send_task(
+            {FIELD_SESSION_ID: session_id},
+            maxlen=10000,
+            idempotency_key=f"interview-evaluate:{session_id}",
+        )
 
 
 class InterviewEvaluateTaskHandler(StreamTaskHandler):

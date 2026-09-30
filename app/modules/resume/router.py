@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,27 +15,30 @@ from app.modules.resume.delete_service import resume_delete_service
 from app.modules.resume.history_service import resume_history_service
 from app.modules.resume.schemas import ResumeDetailDTO, ResumeListItemDTO
 from app.modules.resume.upload_service import resume_upload_service
+from app.modules.resume.persistence_service import resume_persistence_service
+from app.modules.resume.schemas import StructuredResumeUpdate
+from app.common.request_context import get_request_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _enqueue_analysis(resume_id: int) -> None:
+def _enqueue_analysis(resume_id: int, user_id: int | None = None) -> None:
     """在事务提交后异步触发简历分析。"""
     import asyncio
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_do_enqueue(resume_id))
+        loop.create_task(_do_enqueue(resume_id, user_id, get_request_id()))
     except RuntimeError:
         pass
 
 
-async def _do_enqueue(resume_id: int) -> None:
+async def _do_enqueue(resume_id: int, user_id: int | None = None, request_id: str | None = None) -> None:
     redis = await get_redis()
     producer = AnalyzeStreamProducer(RedisService(redis))
-    await producer.send_analyze_task(resume_id)
+    await producer.send_analyze_task(resume_id, user_id, request_id)
 
 
 @router.get("", response_model=Result[list[ResumeListItemDTO]])
@@ -57,6 +60,32 @@ async def get_resume(
     return Result.success(detail)
 
 
+@router.get("/{resume_id}/structured", response_model=Result[dict])
+async def get_structured_resume(
+    resume_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    structured = await resume_persistence_service.get_structured_profile(db, resume_id, user_id)
+    if structured is None:
+        raise HTTPException(status_code=404, detail="结构化简历不存在")
+    return Result.success(structured)
+
+
+@router.put("/{resume_id}/structured", response_model=Result[dict])
+async def update_structured_resume(
+    resume_id: int,
+    payload: StructuredResumeUpdate,
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    structured = await resume_persistence_service.update_structured_profile(db, resume_id, user_id, payload)
+    if structured is None:
+        raise HTTPException(status_code=404, detail="结构化简历不存在")
+    await db.commit()
+    return Result.success(structured)
+
+
 @router.post("", response_model=Result[ResumeDetailDTO])
 async def upload_resume(
     file: UploadFile = File(...),
@@ -69,7 +98,7 @@ async def upload_resume(
     await db.commit()
 
     if entity.resume_text and entity.analyze_status != "FAILED":
-        _enqueue_analysis(entity.id)
+        _enqueue_analysis(entity.id, user_id)
 
     detail = await resume_history_service.get_resume_detail(db, entity.id, user_id)
     return Result.success(detail)
@@ -95,7 +124,7 @@ async def reanalyze_resume(
 
     await db.commit()
 
-    _enqueue_analysis(resume_id)
+    _enqueue_analysis(resume_id, user_id)
 
     return Result.success(None)
 

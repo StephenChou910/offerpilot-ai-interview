@@ -1,4 +1,17 @@
 services:
+  ocr:
+    build: ./ocr-service
+    container_name: interview-ocr
+    ports:
+      - "8010:8010"
+    environment:
+      OCR_LANG: ch
+      FLAGS_use_mkldnn: "0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
   postgres:
     image: pgvector/pgvector:pg16
     container_name: interview-postgres

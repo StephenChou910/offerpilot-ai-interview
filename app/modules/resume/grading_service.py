@@ -8,7 +8,7 @@ from app.common.ai.structured_output import structured_output_invoker
 from app.common.error_code import ErrorCode
 from app.common.exception import BusinessException
 from app.common.prompt_utils import load_prompt, render_template
-from app.modules.resume.schemas import ResumeAnalysisResponse, ResumeProfile, ScoreDetail, Suggestion
+from app.modules.resume.schemas import ResumeAnalysisResponse, ResumeProfile, ScoreDetail, Suggestion, WorkExperience
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +48,21 @@ class _TechStackDTO(_StructuredDTO):
     context: str
 
 
+class _WorkExperienceDTO(_StructuredDTO):
+    company: str
+    title: str = ""
+    start_date: str = Field(alias="startDate", default="")
+    end_date: str = Field(alias="endDate", default="")
+    description: str = ""
+
+
 class _ResumeProfileDTO(_StructuredDTO):
     projects: list[_ProjectInfoDTO]
     tech_stacks: list[_TechStackDTO] = Field(alias="techStacks")
     experience_level: str = Field(alias="experienceLevel")
     has_projects: bool = Field(alias="hasProjects")
     summary: str
+    work_experiences: list[_WorkExperienceDTO] = Field(alias="workExperiences", default_factory=list)
 
 
 class _AnalysisDTO(_StructuredDTO):
@@ -134,6 +143,10 @@ class ResumeGradingService:
             experience_level=dto.profile.experience_level,
             has_projects=dto.profile.has_projects,
             summary=dto.profile.summary,
+            work_experiences=[WorkExperience(
+                company=w.company, title=w.title, start_date=w.start_date,
+                end_date=w.end_date, description=w.description
+            ) for w in dto.profile.work_experiences],
         )
         return ResumeAnalysisResponse(
             overall_score=dto.overall_score,

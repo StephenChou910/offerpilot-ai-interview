@@ -17,7 +17,19 @@ def test_health_endpoint_contract():
     response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "UP", "service": "AI Interview Platform"}
+    from app.config import settings
+
+    assert response.json() == {"status": "UP", "service": settings.app_name}
+    assert response.headers.get("X-Request-ID")
+
+
+def test_capabilities_endpoint_is_public_and_explicit():
+    response = client.get("/api/health/capabilities")
+
+    assert response.status_code == 200
+    capabilities = response.json()["capabilities"]
+    assert capabilities["resume_ocr"]["status"] == "PLANNED"
+    assert capabilities["arxiv_tools"]["status"] == "PLACEHOLDER"
 
 
 def test_config_health_endpoint_contract():
@@ -89,3 +101,17 @@ def test_config_report_flags_missing_core_services():
     assert report.status == "ERROR"
     assert report.has_errors
     assert any(issue.key == "AI_BAILIAN_API_KEY" for issue in report.issues)
+
+
+def test_strict_config_rejects_default_secrets(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("JWT_SECRET_KEY", "short")
+    strict_settings = Settings(strict_config=True)
+    strict_settings.database.password = "password"
+    strict_settings.storage.secret_key = "minioadmin"
+
+    report = build_config_check_report(strict_settings, check_ports=False)
+
+    keys = {issue.key for issue in report.issues if issue.severity == "ERROR"}
+    assert {"POSTGRES_PASSWORD", "APP_STORAGE_SECRET_KEY", "JWT_SECRET_KEY"}.issubset(keys)

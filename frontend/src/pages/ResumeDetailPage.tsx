@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Loader2, AlertCircle, Play } from 'lucide-react';
+import { ArrowLeft, Loader2, AlertCircle, Play, Pencil, Save } from 'lucide-react';
 import { resumeApi } from '../api/resume';
-import type { ResumeDetailDTO } from '../types/resume';
+import type { ResumeDetailDTO, StructuredResumeDTO, StructuredResumeUpdate } from '../types/resume';
 
 export default function ResumeDetailPage() {
   const { resumeId } = useParams<{ resumeId: string }>();
@@ -10,6 +10,10 @@ export default function ResumeDetailPage() {
   const [detail, setDetail] = useState<ResumeDetailDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [structured, setStructured] = useState<StructuredResumeDTO | null>(null);
+  const [editingStructured, setEditingStructured] = useState(false);
+  const [structuredDraft, setStructuredDraft] = useState('');
+  const [structuredError, setStructuredError] = useState('');
 
   useEffect(() => {
     if (!resumeId) return;
@@ -18,6 +22,9 @@ export default function ResumeDetailPage() {
       .then(data => setDetail(data))
       .catch(err => setError(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setLoading(false));
+    resumeApi.getStructuredResume(id)
+      .then(data => { setStructured(data); setStructuredDraft(JSON.stringify({ summary: data.summary, experience_level: data.experience_level, projects: data.projects, skills: data.skills, work_experiences: data.work_experiences }, null, 2)); })
+      .catch(() => setStructured(null));
   }, [resumeId]);
 
   if (loading) {
@@ -49,6 +56,19 @@ export default function ResumeDetailPage() {
   };
   const status = statusMap[detail.analyze_status] || statusMap.PENDING;
 
+  const saveStructured = async () => {
+    try {
+      setStructuredError('');
+      const payload = JSON.parse(structuredDraft) as StructuredResumeUpdate;
+      const updated = await resumeApi.updateStructuredResume(detail.id, payload);
+      setStructured(updated);
+      setStructuredDraft(JSON.stringify(payload, null, 2));
+      setEditingStructured(false);
+    } catch (err) {
+      setStructuredError(err instanceof Error ? err.message : '结构化数据格式错误或保存失败');
+    }
+  };
+
   return (
     <div>
       <div className="flex items-center gap-3 mb-8">
@@ -78,6 +98,25 @@ export default function ResumeDetailPage() {
           <AlertCircle className="w-4 h-4 inline mr-2" />
           分析失败: {detail.analyze_error}
         </div>
+      )}
+
+      {structured && (
+        <section className="bg-white rounded-2xl border border-slate-200 p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div><h2 className="text-lg font-semibold text-slate-900">结构化简历</h2><p className="text-xs text-slate-400 mt-1">版本 {structured.version} · 来源 {structured.extraction_method}</p></div>
+            <button onClick={() => setEditingStructured(!editingStructured)} className="flex items-center gap-1 px-3 py-2 text-sm border rounded-lg hover:bg-slate-50"><Pencil className="w-4 h-4" /> 人工纠正</button>
+          </div>
+          {editingStructured ? <>
+            <textarea value={structuredDraft} onChange={e => setStructuredDraft(e.target.value)} className="w-full h-72 font-mono text-xs border rounded-lg p-3" />
+            {structuredError && <p className="text-sm text-red-500 mt-2">{structuredError}</p>}
+            <button onClick={saveStructured} className="mt-3 flex items-center gap-1 px-4 py-2 text-sm bg-primary-600 text-white rounded-lg"><Save className="w-4 h-4" /> 保存新版本</button>
+          </> : <div className="space-y-4 text-sm text-slate-600">
+            <p>{structured.summary}</p>
+            <p><span className="font-medium">技能：</span>{structured.skills.map(s => s.name).join('、') || '暂无'}</p>
+            <div><span className="font-medium">工作/实习：</span>{structured.work_experiences.map(w => `${w.company} ${w.title}`).join('；') || '暂无'}</div>
+            <div><span className="font-medium">项目：</span>{structured.projects.map(p => `${p.name}（${p.tech_stack.join('、')}）`).join('；') || '暂无'}</div>
+          </div>}
+        </section>
       )}
 
       {latestAnalysis && (

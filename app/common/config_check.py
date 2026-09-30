@@ -1,4 +1,5 @@
 import logging
+import os
 import socket
 from typing import Literal
 
@@ -53,6 +54,36 @@ def build_config_check_report(settings: Settings, check_ports: bool = True) -> C
                 severity="ERROR" if settings.strict_config else "WARN",
                 key="AI_BAILIAN_API_KEY",
                 message="AI API Key 未配置或仍为占位值，出题、评估、诊断增强能力会不可用。",
+            )
+        )
+
+    # strict_config is used for staging/production-style startup checks.  Do not
+    # silently boot with the development credentials shipped in local examples.
+    if settings.strict_config and settings.database.password.strip().lower() in {"password", "postgres", ""}:
+        issues.append(
+            ConfigIssueDTO(
+                severity="ERROR",
+                key="POSTGRES_PASSWORD",
+                message="生产严格模式禁止使用默认数据库密码。",
+            )
+        )
+
+    if settings.strict_config and settings.storage.secret_key.strip().lower() in {"minioadmin", "", "secret"}:
+        issues.append(
+            ConfigIssueDTO(
+                severity="ERROR",
+                key="APP_STORAGE_SECRET_KEY",
+                message="生产严格模式禁止使用默认对象存储密钥。",
+            )
+        )
+
+    jwt_secret = os.getenv("JWT_SECRET_KEY", "")
+    if settings.strict_config and (len(jwt_secret) < 32 or _looks_missing(jwt_secret)):
+        issues.append(
+            ConfigIssueDTO(
+                severity="ERROR",
+                key="JWT_SECRET_KEY",
+                message="生产严格模式要求配置至少 32 位 JWT_SECRET_KEY。",
             )
         )
 

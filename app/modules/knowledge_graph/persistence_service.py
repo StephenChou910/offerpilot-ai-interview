@@ -5,6 +5,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.modules.knowledge_base.models import KnowledgeBaseEntity
 from app.modules.knowledge_graph.models import KnowledgeGraphEntity, KnowledgeTriple
 from app.modules.knowledge_graph.schemas import (
     EntityDetailDTO,
@@ -20,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 class KnowledgeGraphPersistenceService:
+    @staticmethod
+    def _owned_kb_ids(user_id: int | None):
+        if user_id is None:
+            return None
+        return select(KnowledgeBaseEntity.id).where(KnowledgeBaseEntity.user_id == user_id)
     async def find_or_create_entity(
         self, db: AsyncSession, name: str, entity_type: str, description: str | None = None
     ) -> KnowledgeGraphEntity:
@@ -79,7 +85,7 @@ class KnowledgeGraphPersistenceService:
         return triple
 
     async def query_triples_by_entity(
-        self, db: AsyncSession, entity_name: str, kb_id: int | None = None
+        self, db: AsyncSession, entity_name: str, kb_id: int | None = None, user_id: int | None = None
     ) -> list[KnowledgeTriple]:
         stmt = (
             select(KnowledgeTriple)
@@ -99,13 +105,15 @@ class KnowledgeGraphPersistenceService:
         )
         if kb_id is not None:
             stmt = stmt.where(KnowledgeTriple.source_kb_id == kb_id)
+        elif user_id is not None:
+            stmt = stmt.where(KnowledgeTriple.source_kb_id.in_(self._owned_kb_ids(user_id)))
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
     async def query_two_hop(
-        self, db: AsyncSession, entity_name: str, kb_id: int | None = None
+        self, db: AsyncSession, entity_name: str, kb_id: int | None = None, user_id: int | None = None
     ) -> list[KnowledgeTriple]:
-        first_hop = await self.query_triples_by_entity(db, entity_name, kb_id)
+        first_hop = await self.query_triples_by_entity(db, entity_name, kb_id, user_id)
         neighbor_ids = set()
         for t in first_hop:
             if t.subject_entity.name == entity_name:
@@ -126,6 +134,8 @@ class KnowledgeGraphPersistenceService:
         )
         if kb_id is not None:
             stmt = stmt.where(KnowledgeTriple.source_kb_id == kb_id)
+        elif user_id is not None:
+            stmt = stmt.where(KnowledgeTriple.source_kb_id.in_(self._owned_kb_ids(user_id)))
         result = await db.execute(stmt)
         second_hop = list(result.scalars().all())
 
@@ -143,6 +153,7 @@ class KnowledgeGraphPersistenceService:
         kb_id: int | None = None,
         entity_types: list[str] | None = None,
         limit: int = 200,
+        user_id: int | None = None,
     ) -> GraphDataDTO:
         triple_stmt = (
             select(KnowledgeTriple)
@@ -154,6 +165,8 @@ class KnowledgeGraphPersistenceService:
         )
         if kb_id is not None:
             triple_stmt = triple_stmt.where(KnowledgeTriple.source_kb_id == kb_id)
+        elif user_id is not None:
+            triple_stmt = triple_stmt.where(KnowledgeTriple.source_kb_id.in_(self._owned_kb_ids(user_id)))
         triple_stmt = triple_stmt.order_by(
             (KnowledgeGraphEntity.mention_count + KnowledgeTriple.confidence * 10).desc()
         ).limit(limit)
@@ -212,7 +225,9 @@ class KnowledgeGraphPersistenceService:
             ),
         )
 
-    async def get_entity_detail(self, db: AsyncSession, entity_name: str, depth: int = 2) -> EntityDetailDTO | None:
+    async def get_entity_detail(
+        self, db: AsyncSession, entity_name: str, depth: int = 2, user_id: int | None = None
+    ) -> EntityDetailDTO | None:
         stmt = select(KnowledgeGraphEntity).where(KnowledgeGraphEntity.name == entity_name)
         result = await db.execute(stmt)
         entity = result.scalar_one_or_none()
@@ -220,9 +235,11 @@ class KnowledgeGraphPersistenceService:
             return None
 
         if depth <= 1:
-            triples = await self.query_triples_by_entity(db, entity_name)
+            triples = await self.query_triples_by_entity(db, entity_name, user_id=user_id)
         else:
-            triples = await self.query_two_hop(db, entity_name)
+            triples = await self.query_two_hop(db, entity_name, user_id=user_id)
+        if user_id is not None and not triples:
+            return None
 
         triple_dtos = []
         for t in triples:
@@ -274,9 +291,21 @@ class KnowledgeGraphPersistenceService:
         keyword: str | None = None,
         page: int = 1,
         size: int = 50,
+        user_id: int | None = None,
     ) -> tuple[list[KnowledgeGraphEntity], int]:
         stmt = select(KnowledgeGraphEntity)
         count_stmt = select(func.count(KnowledgeGraphEntity.id))
+
+        if user_id is not None:
+            owned_subjects = select(KnowledgeTriple.subject_id).where(
+                KnowledgeTriple.source_kb_id.in_(self._owned_kb_ids(user_id))
+            )
+            owned_objects = select(KnowledgeTriple.object_id).where(
+                KnowledgeTriple.source_kb_id.in_(self._owned_kb_ids(user_id))
+            )
+            owned_entity_ids = owned_subjects.union(owned_objects)
+            stmt = stmt.where(KnowledgeGraphEntity.id.in_(owned_entity_ids))
+            count_stmt = count_stmt.where(KnowledgeGraphEntity.id.in_(owned_entity_ids))
 
         if entity_type:
             stmt = stmt.where(KnowledgeGraphEntity.entity_type == entity_type)

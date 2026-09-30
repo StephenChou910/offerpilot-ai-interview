@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.common.model import AsyncTaskStatus
 
@@ -21,29 +21,58 @@ class Suggestion(BaseModel):
 
 
 class ProjectInfo(BaseModel):
-    name: str
-    role: str
-    tech_stack: list[str]
-    description: str
-    highlights: list[str]
+    model_config = ConfigDict(extra="ignore")
+    name: str = Field(min_length=1, max_length=300)
+    role: str = Field(default="", max_length=300)
+    tech_stack: list[str] = Field(default_factory=list, max_length=50)
+    description: str = Field(default="", max_length=10000)
+    highlights: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("name", "role", "description", mode="before")
+    @classmethod
+    def normalize_text(cls, value: object) -> str:
+        return str(value or "").strip()
 
 
 class TechStack(BaseModel):
-    name: str
-    proficiency: str
-    context: str
+    model_config = ConfigDict(extra="ignore")
+    name: str = Field(min_length=1, max_length=200)
+    proficiency: str = Field(default="", max_length=64)
+    context: str = Field(default="", max_length=5000)
+
+
+class WorkExperience(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    company: str = Field(min_length=1, max_length=300)
+    title: str = Field(default="", max_length=200)
+    start_date: str = Field(default="", max_length=32)
+    end_date: str = Field(default="", max_length=32)
+    description: str = Field(default="", max_length=10000)
 
 
 class ResumeProfile(BaseModel):
-    projects: list[ProjectInfo] = []
-    tech_stacks: list[TechStack] = []
-    experience_level: str = "unknown"
+    model_config = ConfigDict(extra="ignore")
+    projects: list[ProjectInfo] = Field(default_factory=list, max_length=100)
+    tech_stacks: list[TechStack] = Field(default_factory=list, max_length=200)
+    experience_level: str = Field(default="unknown", max_length=64)
     has_projects: bool = False
-    summary: str = ""
+    summary: str = Field(default="", max_length=10000)
+    work_experiences: list[WorkExperience] = Field(default_factory=list, max_length=100)
+
+
+class StructuredResumeUpdate(BaseModel):
+    """用户确认/纠正后的结构化简历内容。"""
+    model_config = ConfigDict(extra="forbid")
+    summary: str = Field(default="", max_length=10000)
+    experience_level: str = Field(default="unknown", max_length=64)
+    projects: list[ProjectInfo] = Field(default_factory=list, max_length=100)
+    skills: list[TechStack] = Field(default_factory=list, max_length=200)
+    work_experiences: list[WorkExperience] = Field(default_factory=list, max_length=100)
 
 
 class ResumeAnalysisResponse(BaseModel):
-    overall_score: int
+    model_config = ConfigDict(extra="ignore")
+    overall_score: int = Field(ge=0, le=100)
     score_detail: ScoreDetail
     summary: str
     strengths: list[str]

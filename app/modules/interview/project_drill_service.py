@@ -9,6 +9,7 @@ from app.modules.interview.project_drill_schemas import (
 )
 from app.modules.interview.schemas import InterviewQuestionDTO, KeyPoint
 from app.modules.resume.history_service import resume_history_service
+from app.modules.resume.persistence_service import resume_persistence_service
 from app.modules.resume.schemas import ProjectInfo, ResumeDetailDTO, ResumeProfile
 
 
@@ -28,7 +29,23 @@ class ProjectDrillService:
         user_id: int,
     ) -> ProjectDrillDTO:
         resume_detail = await resume_history_service.get_resume_detail(db, request.resume_id, user_id)
+        structured = await resume_persistence_service.get_structured_profile(db, request.resume_id, user_id)
+        self._apply_structured_profile(resume_detail, structured)
         return self.build_drill(request, resume_detail)
+
+    @staticmethod
+    def _apply_structured_profile(resume_detail: ResumeDetailDTO, structured: dict | None) -> None:
+        if not structured or not resume_detail.analyses:
+            return
+        latest = max(resume_detail.analyses, key=lambda item: item.analyzed_at)
+        latest.profile = ResumeProfile(
+            summary=structured.get("summary") or "",
+            experience_level=structured.get("experience_level") or "unknown",
+            has_projects=bool(structured.get("projects")),
+            projects=[{**item, "tech_stack": item.get("tech_stack", [])} for item in structured.get("projects", [])],
+            tech_stacks=structured.get("skills", []),
+            work_experiences=structured.get("work_experiences", []),
+        )
 
     def build_drill(self, request: ProjectDrillRequest, resume_detail: ResumeDetailDTO) -> ProjectDrillDTO:
         target_role = request.target_role.strip()

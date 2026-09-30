@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,8 @@ from fastapi.responses import JSONResponse
 
 import app.database as db_module
 from app.common.config_check import build_config_check_report, log_config_check_report
+from app.common.request_context import request_id_context
+from app.common.log_redaction import RedactionFilter
 from app.common.exception_handlers import register_exception_handlers
 from app.config import settings
 from app.database import close_db, init_db, init_engine
@@ -19,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(RedactionFilter())
     worker_tasks: list[asyncio.Task] = []
     workers: list[StreamWorker] = []
 
@@ -69,23 +74,39 @@ async def lifespan(app: FastAPI):
 
             redis_service = RedisService(redis)
 
+            resume_handler = ResumeAnalyzeTaskHandler(
+                db_module.async_session_factory, stream_key=RESUME_ANALYZE_STREAM_KEY
+            )
+            interview_handler = InterviewEvaluateTaskHandler(
+                db_module.async_session_factory, stream_key=EVALUATE_STREAM_KEY
+            )
+            knowledge_base_handler = KnowledgeBaseIndexTaskHandler(
+                db_module.async_session_factory, stream_key=KNOWLEDGE_BASE_INDEX_STREAM_KEY
+            )
+
             resume_worker = StreamWorker(
                 name="resume-analyze-worker",
                 redis_service=redis_service,
                 stream_key=RESUME_ANALYZE_STREAM_KEY,
-                handler=ResumeAnalyzeTaskHandler(db_module.async_session_factory).handle,
+                handler=resume_handler.handle,
+                cancel_handler=resume_handler.cancel,
+                dead_letter_handler=resume_handler.dead_letter,
             )
             interview_worker = StreamWorker(
                 name="interview-evaluate-worker",
                 redis_service=redis_service,
                 stream_key=EVALUATE_STREAM_KEY,
-                handler=InterviewEvaluateTaskHandler(db_module.async_session_factory).handle,
+                handler=interview_handler.handle,
+                cancel_handler=interview_handler.cancel,
+                dead_letter_handler=interview_handler.dead_letter,
             )
             knowledge_base_worker = StreamWorker(
                 name="knowledge-base-index-worker",
                 redis_service=redis_service,
                 stream_key=KNOWLEDGE_BASE_INDEX_STREAM_KEY,
-                handler=KnowledgeBaseIndexTaskHandler(db_module.async_session_factory).handle,
+                handler=knowledge_base_handler.handle,
+                cancel_handler=knowledge_base_handler.cancel,
+                dead_letter_handler=knowledge_base_handler.dead_letter,
             )
 
             workers.extend([resume_worker, interview_worker, knowledge_base_worker])
@@ -138,37 +159,58 @@ PUBLIC_PATHS = (
 async def auth_middleware(request: Request, call_next):
     """全局认证中间件"""
     path = request.url.path
+    incoming_request_id = request.headers.get("X-Request-ID")
+    request_id = incoming_request_id.strip()[:128] if incoming_request_id else uuid.uuid4().hex
+    request.state.request_id = request_id
+    context_token = request_id_context.set(request_id)
 
     # 公开路径不需要认证
     if any(path.startswith(p) for p in PUBLIC_PATHS):
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        request_id_context.reset(context_token)
+        return response
 
     # OPTIONS 请求不需要认证（CORS 预检）
     if request.method == "OPTIONS":
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        request_id_context.reset(context_token)
+        return response
 
     # 检查 Authorization header
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
-        return JSONResponse(
+        response = JSONResponse(
             status_code=401,
-            content={"detail": "未提供认证凭证"},
+            content={"detail": "未提供认证凭证", "request_id": request_id},
         )
+        response.headers["X-Request-ID"] = request_id
+        request_id_context.reset(context_token)
+        return response
 
     # 验证 token
-    token = auth_header.split(" ", 1)[1]
+    access_token = auth_header.split(" ", 1)[1]
     from app.modules.auth.security import decode_access_token
 
-    payload = decode_access_token(token)
+    payload = decode_access_token(access_token)
     if payload is None:
-        return JSONResponse(
+        response = JSONResponse(
             status_code=401,
-            content={"detail": "无效的认证凭证"},
+            content={"detail": "无效的认证凭证", "request_id": request_id},
         )
+        response.headers["X-Request-ID"] = request_id
+        request_id_context.reset(context_token)
+        return response
 
     # 将用户信息存入 request.state
     request.state.user_id = payload.get("sub")
-    return await call_next(request)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        request_id_context.reset(context_token)
 
 
 def create_app() -> FastAPI:
@@ -204,11 +246,25 @@ def create_app() -> FastAPI:
             report = build_config_check_report(settings)
         return report.model_dump()
 
+    @app.get("/api/health/capabilities")
+    async def capabilities_health_check():
+        """Expose feature readiness without exposing secrets or provider details."""
+        return {
+            "capabilities": {
+                "resume_ocr": {"status": "PLANNED", "message": "当前版本使用文本抽取，OCR 兜底待阶段 2 实施"},
+                "knowledge_graph": {"status": "EXPERIMENTAL", "message": "实体和三元组抽取可用，面试链路接入待阶段 3"},
+                "agent_orchestration": {"status": "EXPERIMENTAL", "message": "主要用于知识任务，统一工作流待阶段 1 实施"},
+                "github_tools": {"status": "EXPERIMENTAL", "message": "依赖外部凭据和服务限额"},
+                "arxiv_tools": {"status": "PLACEHOLDER", "message": "当前为占位能力，不作为生产结果"},
+            }
+        }
+
     return app
 
 
 def _register_routers(app: FastAPI) -> None:
     from app.modules.agent_orchestration.router import router as agent_router
+    from app.modules.tasks.router import router as tasks_router
     from app.modules.agent_orchestration.smart_download_router import router as smart_download_router
     from app.modules.auth.router import router as auth_router
     from app.modules.demo.router import router as demo_router
@@ -234,6 +290,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(cross_kb_router, prefix="/api/cross-knowledgebase", tags=["跨知识库问答"])
     app.include_router(kg_router, prefix="/api/knowledge-graph", tags=["知识图谱"])
     app.include_router(agent_router, tags=["智能Agent"])
+    app.include_router(tasks_router)
     app.include_router(smart_download_router, tags=["智能下载"])
 
 

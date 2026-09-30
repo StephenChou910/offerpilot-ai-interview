@@ -8,7 +8,10 @@ from langchain_openai import ChatOpenAI
 from openai import APITimeoutError, RateLimitError
 
 from app.common.exception import LLMRateLimitException, LLMTimeoutException
+from app.common.request_context import get_request_id
 from app.config import settings
+import app.database as db_module
+from app.common.llm_audit_models import LLMCallAuditEntity
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +31,37 @@ class MonitoredChatModel:
 
     async def ainvoke(self, messages, **kwargs):
         start = time.time()
+        context_chars = sum(len(getattr(message, "content", str(message))) for message in messages)
+        if context_chars > settings.ai.gateway_max_context_chars:
+            raise ValueError(f"LLM 上下文长度超过限制: {context_chars}")
         try:
             async with _LLM_SEMAPHORE:
                 result = await self._model.ainvoke(messages, **kwargs)
             duration = time.time() - start
 
             if hasattr(result, "response_metadata"):
-                usage = result.response_metadata.get("token_usage", {})
+                metadata = result.response_metadata or {}
+                usage = metadata.get("token_usage") or metadata.get("usage", {})
+                if not usage and hasattr(result, "usage_metadata"):
+                    usage_metadata = result.usage_metadata or {}
+                    usage = {
+                        "prompt_tokens": usage_metadata.get("input_tokens", 0),
+                        "completion_tokens": usage_metadata.get("output_tokens", 0),
+                        "total_tokens": usage_metadata.get("total_tokens", 0),
+                    }
                 logger.info(
-                    "LLM调用成功: provider=%s, model=%s, duration=%.2fs, tokens=%s",
+                    "LLM调用成功: request_id=%s, provider=%s, model=%s, duration=%.2fs, tokens=%s",
+                    get_request_id(),
                     self._provider,
                     self._model.model_name,
                     duration,
                     usage,
                 )
+                await self._audit(usage, time.time() - start, "COMPLETED")
             else:
                 logger.info(
-                    "LLM调用成功: provider=%s, model=%s, duration=%.2fs",
+                    "LLM调用成功: request_id=%s, provider=%s, model=%s, duration=%.2fs",
+                    get_request_id(),
                     self._provider,
                     self._model.model_name,
                     duration,
@@ -53,7 +70,8 @@ class MonitoredChatModel:
         except APITimeoutError as e:
             duration = time.time() - start
             logger.error(
-                "LLM调用超时: provider=%s, model=%s, duration=%.2fs, error=%s",
+                "LLM调用超时: request_id=%s, provider=%s, model=%s, duration=%.2fs, error=%s",
+                get_request_id(),
                 self._provider,
                 self._model.model_name,
                 duration,
@@ -63,7 +81,8 @@ class MonitoredChatModel:
         except RateLimitError as e:
             duration = time.time() - start
             logger.error(
-                "LLM调用频率限制: provider=%s, model=%s, duration=%.2fs, error=%s",
+                "LLM调用频率限制: request_id=%s, provider=%s, model=%s, duration=%.2fs, error=%s",
+                get_request_id(),
                 self._provider,
                 self._model.model_name,
                 duration,
@@ -73,13 +92,35 @@ class MonitoredChatModel:
         except Exception as e:
             duration = time.time() - start
             logger.error(
-                "LLM调用失败: provider=%s, model=%s, duration=%.2fs, error=%s",
+                "LLM调用失败: request_id=%s, provider=%s, model=%s, duration=%.2fs, error=%s",
+                get_request_id(),
                 self._provider,
                 self._model.model_name,
                 duration,
                 str(e),
             )
             raise
+
+    async def _audit(self, usage: dict, duration: float, status: str, error: str | None = None) -> None:
+        factory = db_module.async_session_factory
+        if factory is None:
+            return
+        input_tokens = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+        output_tokens = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
+        total_tokens = int(usage.get("total_tokens", input_tokens + output_tokens) or 0)
+        try:
+            async with factory() as db:
+                db.add(LLMCallAuditEntity(
+                    request_id=get_request_id(), provider=self._provider,
+                    model=self._model.model_name, input_tokens=input_tokens,
+                    output_tokens=output_tokens, total_tokens=total_tokens,
+                    estimated_cost=total_tokens * 0.000002,
+                    duration_ms=max(0, int(duration * 1000)), status=status,
+                    error_message=(error or "")[:2000] or None,
+                ))
+                await db.commit()
+        except Exception:
+            logger.exception("LLM 调用审计落库失败")
 
     async def agenerate(self, messages, **kwargs):
         start = time.time()

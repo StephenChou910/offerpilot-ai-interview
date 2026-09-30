@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,6 +47,8 @@ class AiSettings(BaseSettings):
     embedding_api_key: str = ""  # Embedding API 单独配置（默认使用 bailian_api_key）
     embedding_provider: str = "zhipu"  # zhipu | dashscope
     zhipu_api_key: str = ""  # 智谱 API key
+    gateway_max_context_chars: int = 120_000
+    gateway_max_cost_per_call: float = 2.0
 
 
 class StorageSettings(BaseSettings):
@@ -97,6 +100,9 @@ class ResumeSettings(BaseSettings):
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "text/plain",
         "text/markdown",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
     ]
 
 
@@ -133,8 +139,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "AI Interview Platform"
+    environment: Literal["development", "test", "staging", "production"] = "development"
     debug: bool = False
     strict_config: bool = False
+    ocr_provider: Literal["local", "http"] = "local"
+    ocr_service_url: str = "http://127.0.0.1:8010"
 
     database: DatabaseSettings = DatabaseSettings()
     redis: RedisSettings = RedisSettings()

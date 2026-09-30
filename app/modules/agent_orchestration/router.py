@@ -21,6 +21,7 @@ from app.modules.agent_orchestration.persistence_service import AgentPersistence
 from app.modules.agent_orchestration.tool_registry import AgentToolRegistry
 from app.modules.auth.dependencies import get_current_user_id
 from app.modules.knowledge_base.rag_service import KnowledgeBaseRagService
+from app.modules.knowledge_base.persistence_service import knowledge_base_persistence_service
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,8 @@ class KnowledgeBuilderResponse(BaseModel):
 async def build_knowledge_base(
     request: KnowledgeBuilderRequest,
     knowledge_service: KnowledgeBaseRagService = Depends(get_knowledge_service),
+    user_id: int = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     智能知识库构建接口
@@ -308,6 +311,9 @@ async def build_knowledge_base(
     logger.info(f"🤖 智能知识库构建: {request.message}")
 
     try:
+        # Never allow the agent to append to another user's knowledge base.
+        if request.kb_id is not None:
+            await knowledge_base_persistence_service.find_by_id_or_throw(db, request.kb_id, user_id)
         # 初始化 MCP 服务
         from app.modules.knowledge_base.fetch_service import DocumentFetcher
 
@@ -329,6 +335,7 @@ async def build_knowledge_base(
         result = await agent.execute(
             user_input=request.message,
             kb_id=request.kb_id,
+            context={"user_id": user_id},
         )
 
         if not result.success:

@@ -4,5 +4,10 @@ import enum
 class AsyncTaskStatus(str, enum.Enum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
+    RETRYING = "RETRYING"
     COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"
     FAILED = "FAILED"
+    TIMEOUT = "TIMEOUT"
+    CANCELLED = "CANCELLED"
+    DEAD_LETTER = "DEAD_LETTER"

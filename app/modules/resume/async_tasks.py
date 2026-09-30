@@ -19,8 +19,10 @@ class AnalyzeStreamProducer(StreamTaskProducer):
     def __init__(self, redis_service: RedisService):
         super().__init__(redis_service, RESUME_ANALYZE_STREAM_KEY)
 
-    async def send_analyze_task(self, resume_id: int) -> None:
-        await self.send_task({FIELD_RESUME_ID: str(resume_id)})
+    async def send_analyze_task(self, resume_id: int, user_id: int | None = None, request_id: str | None = None, force: bool = False) -> None:
+        # 重新分析必须使用新的幂等键，否则会被历史已完成任务拦截。
+        key = f"resume-analyze:{resume_id}:{request_id}" if force and request_id else f"resume-analyze:{resume_id}"
+        await self.send_task({FIELD_RESUME_ID: str(resume_id)}, idempotency_key=key, user_id=user_id, request_id=request_id)
 
 
 class ResumeAnalyzeTaskHandler(StreamTaskHandler):
@@ -46,4 +48,5 @@ class ResumeAnalyzeTaskHandler(StreamTaskHandler):
         chat_model = llm_registry.default
         result = await resume_grading_service.analyze_resume(chat_model, entity.resume_text)
         await resume_persistence_service.save_analysis(db, resume_id, result)
+        await resume_persistence_service.save_structured_profile(db, entity, result)
         logger.info("简历分析完成: resumeId=%d, 总分=%d", resume_id, result.overall_score)

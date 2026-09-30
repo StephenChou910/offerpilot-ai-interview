@@ -11,6 +11,7 @@ from app.modules.interview.diagnosis_schemas import (
     SevenDayPlanItemDTO,
 )
 from app.modules.resume.history_service import resume_history_service
+from app.modules.resume.persistence_service import resume_persistence_service
 from app.modules.resume.schemas import AnalysisHistoryDTO, ResumeDetailDTO, ResumeProfile
 
 
@@ -24,6 +25,24 @@ class InterviewDiagnosisService:
         resume_detail = None
         if request.resume_id is not None:
             resume_detail = await resume_history_service.get_resume_detail(db, request.resume_id, user_id)
+            structured = await resume_persistence_service.get_structured_profile(db, request.resume_id, user_id)
+            if structured:
+                # 诊断优先使用已确认的结构化画像，原始分析作为兼容兜底。
+                structured_profile = ResumeProfile(
+                    summary=structured.get("summary") or "",
+                    experience_level=structured.get("experience_level") or "unknown",
+                    has_projects=bool(structured.get("projects")),
+                    projects=[{
+                        "name": item.get("name", ""), "role": item.get("role", ""),
+                        "tech_stack": [], "description": item.get("description", ""),
+                        "highlights": item.get("highlights", []),
+                    } for item in structured.get("projects", [])],
+                    tech_stacks=structured.get("skills", []),
+                )
+                if resume_detail and resume_detail.analyses:
+                    latest = self._latest_analysis(resume_detail)
+                    if latest:
+                        latest.profile = structured_profile
         return self.build_diagnosis(request, resume_detail)
 
     def build_diagnosis(

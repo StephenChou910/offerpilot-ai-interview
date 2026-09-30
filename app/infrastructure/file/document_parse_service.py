@@ -67,6 +67,9 @@ class DocumentParseService:
             return await self._parse_doc(file_bytes)
         elif lower.endswith(".txt") or lower.endswith(".md"):
             return self._parse_text(file_bytes)
+        elif lower.endswith((".jpg", ".jpeg", ".png", ".webp")):
+            # Images have no text layer; callers use the empty result to trigger OCR.
+            return ""
         else:
             return await self._parse_by_tika(file_bytes)
 

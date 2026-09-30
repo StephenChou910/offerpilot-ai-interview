@@ -53,3 +53,25 @@ export interface ResumeDetailDTO {
   analyze_error: string | null;
   analyses: AnalysisHistoryDTO[];
 }
+
+export interface StructuredProject {
+  name: string;
+  role: string;
+  description: string;
+  highlights: string[];
+  tech_stack: string[];
+}
+
+export interface StructuredSkill { name: string; proficiency: string; context: string; }
+export interface StructuredWorkExperience { company: string; title: string; start_date: string; end_date: string; description: string; }
+export interface StructuredResumeDTO {
+  resume_id: number; version: number; extraction_method: string; confidence: number | null;
+  summary: string; experience_level: string; projects: StructuredProject[];
+  skills: StructuredSkill[]; work_experiences: StructuredWorkExperience[];
+}
+
+export interface StructuredResumeUpdate {
+  summary: string; experience_level: string;
+  projects: Array<Omit<StructuredProject, 'tech_stack'> & { tech_stack: string[] }>;
+  skills: StructuredSkill[]; work_experiences: StructuredWorkExperience[];
+}

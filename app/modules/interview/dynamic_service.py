@@ -49,6 +49,7 @@ from app.modules.knowledge_base.models import KnowledgeBaseEntity, KnowledgeChun
 from app.modules.knowledge_base.persistence_service import knowledge_base_persistence_service
 from app.modules.resume.history_service import resume_history_service
 from app.modules.resume.schemas import ProjectInfo, ResumeDetailDTO, ResumeProfile
+from app.modules.resume.persistence_service import resume_persistence_service
 
 logger = logging.getLogger(__name__)
 
@@ -1535,6 +1536,8 @@ class DynamicInterviewService:
         resume_detail = None
         if request.resume_id:
             resume_detail = await resume_history_service.get_resume_detail(db, request.resume_id, user_id)
+            structured = await resume_persistence_service.get_structured_profile(db, request.resume_id, user_id)
+            self._apply_structured_profile(resume_detail, structured)
 
         session_id = uuid.uuid4().hex[:16]
         skill_id = request.skill_id or settings.interview.default_skill_id
@@ -1574,6 +1577,20 @@ class DynamicInterviewService:
                 "generation_status": SessionStatus.PLANNING.value,
                 "generation_stages": self._generation_stage_summary(active_key="JD_PARSE"),
             },
+        )
+
+    @staticmethod
+    def _apply_structured_profile(resume_detail: ResumeDetailDTO | None, structured: dict | None) -> None:
+        if not resume_detail or not structured or not resume_detail.analyses:
+            return
+        latest = max(resume_detail.analyses, key=lambda item: item.analyzed_at)
+        latest.profile = ResumeProfile(
+            summary=structured.get("summary") or "",
+            experience_level=structured.get("experience_level") or "unknown",
+            has_projects=bool(structured.get("projects")),
+            projects=[{**item, "tech_stack": item.get("tech_stack", [])} for item in structured.get("projects", [])],
+            tech_stacks=structured.get("skills", []),
+            work_experiences=structured.get("work_experiences", []),
         )
 
     async def create_topic_retry_session(
